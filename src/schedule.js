@@ -22,11 +22,11 @@ function buildEventEmbed(event) {
 }
 
 export default function startSchedule(Client) {
-    cron.schedule('*/15 * * * *', async () => {
+    cron.schedule('*/1 * * * *', async () => {
         let events = await remindEvent();
         const channel = await Client.channels.fetch(process.env.CHANNEL_ID);
         for (const event of events) {
-            await channel.send({content: '@everyone', embeds: [buildEventEmbed(event)]});
+            await channel.send({content: '<@&1543101259551342622>', embeds: [buildEventEmbed(event)]});
             await markReminded(event.id);
         }
     });
