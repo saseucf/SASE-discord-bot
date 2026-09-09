@@ -1,14 +1,25 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Client, Collection, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials } from 'discord.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Require the necessary discord.js classes
 const token = process.env.DISCORD_TOKEN;
 
 // Create a new client instance
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+	intents: [
+		GatewayIntentBits.Guilds,
+		GatewayIntentBits.GuildMembers,
+		GatewayIntentBits.GuildMessageReactions,
+	],
+	partials: [
+		Partials.Message,
+		Partials.Channel,
+		Partials.Reaction,
+	],
+});
 // When the client is ready, run this code (only once).
 // The distinction between `client: Client<boolean>` and `readyClient: Client<true>` is important for TypeScript developers.
 // It makes some properties non-nullable.
