@@ -67,6 +67,32 @@ When generating an invite URL, select:
 
 For development, register commands against a test server using `GUILD_ID`. Global commands can take longer to appear.
 
+## Chapter event digests
+
+The bot posts today's published chapter events at 9:00 a.m. Eastern and the
+upcoming Monday through Sunday's events at 6:00 p.m. Eastern on Sundays.
+Officers configure each group's channel and role under **Manage Events →
+Discord Event Groups** on the SASE website. Assign a group on the event form.
+An empty group receives no message. Unassigned events and hackathon sessions
+stay out of these digests.
+
+Apply the companion website migration before starting this bot version. Set
+`SUPABASE_URL`, a server-only `SUPABASE_SERVICE_ROLE_KEY`, and
+`SASE_WEBSITE_URL` (the chapter website's public HTTPS origin) in the bot
+environment. Digests use the channel and role on each group. The bot needs
+access to that Discord server and permission to send in that channel. The role
+must be mentionable there, either through the role setting or the bot's channel
+permissions.
+
+The database records one claim per group, digest type, and date window. If a
+send or its acknowledgement fails, check Discord before posting a replacement
+manually. A claim without a delivery timestamp can mean nothing was sent, some
+messages in a long digest went through, or Discord accepted the whole digest.
+The scheduled jobs don't replay earlier time slots on startup.
+
+`npm test` uses mock destinations and covers scheduling, formatting, mentions,
+and send failures.
+
 ## Project Structure
 
 The structure may grow as features are added:

@@ -1,42 +1,71 @@
 import 'dotenv/config';
-import remindEvent, {markReminded, getWeeklyEvents} from "./supabase.js";
-import { EmbedBuilder } from 'discord.js';
 import cron from 'node-cron';
+import { PermissionFlagsBits } from 'discord.js';
+import { createDigestWorker } from './chapter-digests.js';
+import { TIME_ZONE } from './reminder-windows.js';
+import { createDigestStore } from './supabase.js';
 
-function buildEventEmbed(event) {
-    const unix = Math.floor(new Date(event.start_time).getTime() / 1000);
-    const endUnix = Math.floor(new Date(event.end_time).getTime() / 1000);
-    return new EmbedBuilder()
-        .setColor(0x171C4A)
-        .setAuthor({ name: event.event_type })
-        .setTitle(event.title)
-        .setDescription(event.description ?? '')
-        .addFields(
-            { name: 'Date', value: new Date(event.start_time).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }), inline: true },
-            { name: 'Location', value: event.location ?? 'TBD', inline: true },
-            { name: '\u200b', value: '\u200b', inline: true },
-            { name: 'Start', value: `<t:${unix}:t>`, inline: true },
-            { name: 'End', value: `<t:${endUnix}:t>`, inline: true },
-            { name: '\u200b', value: '\u200b', inline: true },
-        );
+// Never automatically retry a message that Discord might have accepted.
+export async function sendDigestMessage(channelId, message, token, request = fetch) {
+    const response = await request(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(message),
+        signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error(`Discord rejected the digest (HTTP ${response.status})`);
 }
 
-export default function startSchedule(Client) {
-    cron.schedule('*/15 * * * *', async () => {
-        let events = await remindEvent();
-        const channel = await Client.channels.fetch(process.env.CHANNEL_ID);
-        for (const event of events) {
-            await channel.send({content: '@everyone', embeds: [buildEventEmbed(event)]});
-            await markReminded(event.id);
-        }
-    });
+export async function sendToEventGroup(client, digest, messages, token, post = sendDigestMessage) {
+    const channel = await client.channels.fetch(digest.discord_channel_id);
+    if (!channel?.guild || !channel.isSendable()) {
+        throw new Error('Use a Discord server channel that the bot can send to');
+    }
+    const role = await channel.guild.roles.fetch(digest.discord_role_id);
+    if (!role || role.id === channel.guild.id) {
+        throw new Error('Use a specific role in the same Discord server as the channel');
+    }
+    if (!role.mentionable && !channel.permissionsFor(client.user)?.has(PermissionFlagsBits.MentionEveryone)) {
+        throw new Error('The bot cannot mention this role in the configured channel');
+    }
 
-    cron.schedule('0 9 * * 1', async () => {
-        let events = await getWeeklyEvents();
-        const channel = await Client.channels.fetch(process.env.CHANNEL_ID);
-        await channel.send('@everyone Check out what\'s happening this week!');
-        for (const event of events) {
-            await channel.send({embeds: [buildEventEmbed(event)]});
+    for (const message of messages) {
+        await post(channel.id, message, token);
+    }
+}
+
+export function registerDigestSchedule(worker, schedule = cron.schedule, report = console.error) {
+    const options = { timezone: TIME_ZONE, noOverlap: true };
+    const run = (kind) => async ({ date }) => {
+        try {
+            await worker(kind, date);
+        } catch (error) {
+            report(`Chapter ${kind} digest job failed`, error);
         }
+    };
+    return [
+        schedule('0 9 * * *', run('daily'), options),
+        schedule('0 18 * * 0', run('weekly'), options),
+    ];
+}
+
+export default function startSchedule(client) {
+    const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SASE_WEBSITE_URL, DISCORD_TOKEN } = process.env;
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !SASE_WEBSITE_URL || !DISCORD_TOKEN) {
+        console.error('Chapter digests require SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SASE_WEBSITE_URL and DISCORD_TOKEN');
+        return;
+    }
+
+    const websiteUrl = URL.canParse(SASE_WEBSITE_URL) ? new URL(SASE_WEBSITE_URL) : null;
+    if (!websiteUrl || websiteUrl.protocol !== 'https:' || websiteUrl.username || websiteUrl.password || websiteUrl.origin.length > 250) {
+        console.error('SASE_WEBSITE_URL must be the public HTTPS origin of the chapter website');
+        return;
+    }
+
+    const worker = createDigestWorker({
+        ...createDigestStore(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY),
+        websiteUrl,
+        send: (digest, messages) => sendToEventGroup(client, digest, messages, DISCORD_TOKEN),
     });
-};
+    return registerDigestSchedule(worker);
+}
