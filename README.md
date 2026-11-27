@@ -72,8 +72,7 @@ For development, register commands against a test server using `GUILD_ID`. Globa
 The bot posts today's published chapter events at 9:00 a.m. Eastern and the
 upcoming Monday through Sunday's events at 6:00 p.m. Eastern on Sundays.
 Officers configure each audience's channel and role under **Discord reminder channels**.
-The event's **Reminder audience** controls delivery. It defaults to the workshop
-subcategory or General, and officers can change it for any event.
+Service, Social, and Fundraiser events use their respective channels. Workshops follow their subcategory. Other events use General.
 Empty destinations receive no message.
 
 Apply the companion website migration before starting this bot version. Set
