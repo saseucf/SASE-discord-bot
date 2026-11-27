@@ -6,6 +6,23 @@ import { createDigestWorker } from './chapter-digests.js';
 import { TIME_ZONE } from './reminder-windows.js';
 import { createDigestStore } from './supabase.js';
 
+const audiences = ['General', 'Pro-Dev', 'Tech', 'Pre-Health', 'Service', 'Socials', 'Fundraisers'];
+
+export function readDestinations(env, report = console.error) {
+    const destinations = [];
+    for (const id of audiences) {
+        const prefix = 'DISCORD_' + id.toUpperCase().replaceAll('-', '_');
+        const channel = env[prefix + '_CHANNEL_ID']?.trim();
+        const role = env[prefix + '_ROLE_ID']?.trim();
+        if (![channel, role].every(value => /^[1-9][0-9]{16,19}$/.test(value ?? ''))) {
+            report(`Skipping ${id}: configure ${prefix}_CHANNEL_ID and ${prefix}_ROLE_ID.`);
+            continue;
+        }
+        destinations.push({ id, discord_channel_id: channel, discord_role_id: role });
+    }
+    return destinations;
+}
+
 // Never automatically retry a message that Discord might have accepted.
 export async function sendDigestMessage(channelId, message, token, request = fetch, wait = delay) {
     for (let attempt = 1; ; attempt++) {
@@ -75,7 +92,10 @@ export default function startSchedule(client) {
         return;
     }
 
+    const groups = readDestinations(process.env);
+    if (!groups.length) return;
     const worker = createDigestWorker({
+        listGroups: () => groups,
         ...createDigestStore(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY),
         websiteUrl,
         validateDestination: group => validateDestination(client, group),

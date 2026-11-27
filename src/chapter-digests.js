@@ -44,8 +44,9 @@ export function createDigestWorker({ listGroups, claim, finish, validateDestinat
         for (const group of await listGroups()) {
             try {
                 await validateDestination(group);
-                const digest = await claim(group, kind, window);
-                if (!digest) continue;
+                const events = await claim(group, kind, window);
+                if (!events) continue;
+                const digest = { ...group, name: group.id, events };
                 await send(digest, buildDigestMessages(digest, kind, websiteUrl));
                 await finish(group.id, kind, window);
             } catch (error) {

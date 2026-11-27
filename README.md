@@ -71,14 +71,25 @@ For development, register commands against a test server using `GUILD_ID`. Globa
 
 The bot posts today's published chapter events at 9:00 a.m. Eastern and the
 upcoming Monday through Sunday's events at 6:00 p.m. Eastern on Sundays.
-Officers configure each audience's channel and role under **Discord reminder channels**.
 Service, Social, and Fundraiser events use their respective channels. Workshops follow their subcategory. Other events use General.
 Empty destinations receive no message.
 
 Apply the companion website migration before starting this bot version. Set
 `SUPABASE_URL`, a server-only `SUPABASE_SERVICE_ROLE_KEY`, and
 `SASE_WEBSITE_URL` (the chapter website's public HTTPS origin) in the bot
-environment. Digests use the channel and role on each group. The bot needs
+environment. Set these channel and role IDs on the same host:
+
+| Destination | Channel ID variable | Role ID variable |
+| --- | --- | --- |
+| General | `DISCORD_GENERAL_CHANNEL_ID` | `DISCORD_GENERAL_ROLE_ID` |
+| Pro-Dev | `DISCORD_PRO_DEV_CHANNEL_ID` | `DISCORD_PRO_DEV_ROLE_ID` |
+| Tech | `DISCORD_TECH_CHANNEL_ID` | `DISCORD_TECH_ROLE_ID` |
+| Pre-Health | `DISCORD_PRE_HEALTH_CHANNEL_ID` | `DISCORD_PRE_HEALTH_ROLE_ID` |
+| Service | `DISCORD_SERVICE_CHANNEL_ID` | `DISCORD_SERVICE_ROLE_ID` |
+| Socials | `DISCORD_SOCIALS_CHANNEL_ID` | `DISCORD_SOCIALS_ROLE_ID` |
+| Fundraisers | `DISCORD_FUNDRAISERS_CHANNEL_ID` | `DISCORD_FUNDRAISERS_ROLE_ID` |
+
+Restart the bot after editing its environment. An incomplete or invalid pair logs a configuration error and skips that destination. The bot needs
 access to that Discord server and permission to send in that channel. The role
 must be mentionable there, either through the role setting or the bot's channel
 permissions.

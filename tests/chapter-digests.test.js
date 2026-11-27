@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildDigestMessages, createDigestWorker } from '../src/chapter-digests.js';
-import { registerDigestSchedule, sendDigestMessage, validateDestination } from '../src/schedule.js';
+import { readDestinations, registerDigestSchedule, sendDigestMessage, validateDestination } from '../src/schedule.js';
 
 const websiteUrl = 'https://chapter.example.test';
 const role = '10000000000000001';
@@ -61,7 +61,7 @@ test('skips empty claims, isolates group errors and never sends an already-consu
             assert.equal(window.start, '2026-11-30T05:00:00.000Z');
             if (group === 'empty' || claimed.has(group)) return null;
             claimed.add(group);
-            return { ...digest, name: group };
+            return digest.events;
         },
         finish: async (group) => { finished.push(group); },
         send: async (group, messages) => {
@@ -117,7 +117,7 @@ test('a corrected destination can still claim the same window', async () => {
     const worker = createDigestWorker({
         listGroups: async () => [{ id: 'A' }],
         validateDestination: async () => { if (!valid) throw new Error('wrong role'); },
-        claim: async () => { claims++; return digest; },
+        claim: async () => { claims++; return digest.events; },
         send: async () => {}, finish: async () => {}, report: () => {}, websiteUrl,
     });
     await worker('weekly', now);
@@ -140,4 +140,21 @@ test('a rate-limited continuation retries only that message after the requested 
     }
     assert.deepEqual(waits, [750]);
     assert.deepEqual(posts, ['first', 'continued', 'continued']);
+});
+
+test('loads fixed Discord destinations and skips an incomplete pair', () => {
+    const env = {};
+    const names = ['General', 'Pro-Dev', 'Tech', 'Pre-Health', 'Service', 'Socials', 'Fundraisers'];
+    for (const id of names) {
+        const prefix = 'DISCORD_' + id.toUpperCase().replaceAll('-', '_');
+        env[prefix + '_CHANNEL_ID'] = channelId;
+        env[prefix + '_ROLE_ID'] = role;
+    }
+    assert.deepEqual(readDestinations(env).map(group => group.id), names);
+    delete env.DISCORD_SERVICE_ROLE_ID;
+    const errors = [];
+    const groups = readDestinations(env, error => errors.push(error));
+    assert.equal(groups.length, 6);
+    assert.equal(groups.some(group => group.id === 'Service'), false);
+    assert.match(errors[0], /DISCORD_SERVICE_ROLE_ID/);
 });
