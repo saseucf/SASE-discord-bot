@@ -71,10 +71,11 @@ For development, register commands against a test server using `GUILD_ID`. Globa
 
 The bot posts today's published chapter events at 9:00 a.m. Eastern and the
 upcoming Monday through Sunday's events at 6:00 p.m. Eastern on Sundays.
-Officers configure each group's channel and role under **Manage Events →
-Discord Event Groups** on the SASE website. Assign a group on the event form.
-An empty group receives no message. Unassigned events and hackathon sessions
-stay out of these digests.
+Under **Manage Events ? Discord reminder channels**, officers set a channel and
+role for each workshop subcategory and the General destination. Tech, Pro-Dev,
+and Pre-Health workshops go to their respective channels. All other chapter
+events use General, including workshops without a subcategory.
+Empty destinations receive no message.
 
 Apply the companion website migration before starting this bot version. Set
 `SUPABASE_URL`, a server-only `SUPABASE_SERVICE_ROLE_KEY`, and
