@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildDigestMessages, createDigestWorker } from '../src/chapter-digests.js';
-import { registerDigestSchedule, sendDigestMessage, sendToEventGroup } from '../src/schedule.js';
+import { registerDigestSchedule, sendDigestMessage, validateDestination } from '../src/schedule.js';
 
 const websiteUrl = 'https://chapter.example.test';
 const role = '10000000000000001';
@@ -54,8 +54,9 @@ test('skips empty claims, isolates group errors and never sends an already-consu
     const finished = [];
     const reported = [];
     const worker = createDigestWorker({
-        listGroups: async () => ['empty', 'A', 'B'],
-        claim: async (group, kind, window) => {
+        listGroups: async () => ['empty', 'A', 'B'].map(id => ({ id })),
+        validateDestination: async () => {},
+        claim: async ({ id: group }, kind, window) => {
             assert.equal(kind, 'weekly');
             assert.equal(window.start, '2026-11-30T05:00:00.000Z');
             if (group === 'empty' || claimed.has(group)) return null;
@@ -80,18 +81,20 @@ test('skips empty claims, isolates group errors and never sends an already-consu
 });
 
 test('checks the destination and refuses an everyone role', async () => {
-    const sent = [];
     const guildId = '10000000000000003';
-    const client = { channels: { fetch: async (id) => ({
-        id,
-        isSendable: () => true,
-        guild: { id: guildId, roles: { fetch: async (id) => ({ id, mentionable: true }) } },
-    }) } };
-    const messages = buildDigestMessages(digest, 'weekly', websiteUrl);
-    const post = async (...args) => sent.push(args);
-    await sendToEventGroup(client, digest, messages, 'mock-token', post);
-    await assert.rejects(sendToEventGroup(client, { ...digest, discord_role_id: guildId }, messages, 'mock-token', post), /specific role/);
-    assert.deepEqual(sent, [[channelId, messages[0], 'mock-token']]);
+    const channel = {
+        id: channelId, isSendable: () => true, isThread: () => false,
+        permissionsFor: () => ({ has: () => true }),
+        guild: { id: guildId, roles: { fetch: async id => ({ id, mentionable: true }) } },
+    };
+    const client = { channels: { fetch: async () => channel } };
+    await validateDestination(client, digest);
+    await assert.rejects(validateDestination(client, { ...digest, discord_role_id: guildId }), /specific role/);
+    channel.guild.roles.fetch = async id => ({ id, mentionable: false });
+    channel.permissionsFor = () => ({ has: permission => Array.isArray(permission) });
+    await assert.rejects(validateDestination(client, digest), /cannot mention/);
+    channel.guild = null;
+    await assert.rejects(validateDestination(client, digest), /server channel/);
 });
 
 test('makes one POST attempt against a stub even if Discord rejects the request', async () => {
@@ -106,4 +109,35 @@ test('makes one POST attempt against a stub even if Discord rejects the request'
     };
     await assert.rejects(sendDigestMessage(channelId, message, 'mock-token', mockFetch), /HTTP 503/);
     assert.equal(requests, 1);
+});
+
+test('a corrected destination can still claim the same window', async () => {
+    let valid = false;
+    let claims = 0;
+    const worker = createDigestWorker({
+        listGroups: async () => [{ id: 'A' }],
+        validateDestination: async () => { if (!valid) throw new Error('wrong role'); },
+        claim: async () => { claims++; return digest; },
+        send: async () => {}, finish: async () => {}, report: () => {}, websiteUrl,
+    });
+    await worker('weekly', now);
+    assert.equal(claims, 0);
+    valid = true;
+    await worker('weekly', now);
+    assert.equal(claims, 1);
+});
+
+test('a rate-limited continuation retries only that message after the requested delay', async () => {
+    const posts = [];
+    const waits = [];
+    const request = async (_url, options) => {
+        posts.push(JSON.parse(options.body).content);
+        if (posts.length === 2) return { status: 429, json: async () => ({ retry_after: 0.75 }) };
+        return { ok: true };
+    };
+    for (const content of ['first', 'continued']) {
+        await sendDigestMessage(channelId, { content }, 'mock', request, async ms => waits.push(ms));
+    }
+    assert.deepEqual(waits, [750]);
+    assert.deepEqual(posts, ['first', 'continued', 'continued']);
 });

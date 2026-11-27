@@ -38,18 +38,19 @@ export function buildDigestMessages(digest, kind, websiteUrl) {
     }));
 }
 
-export function createDigestWorker({ listGroups, claim, finish, send, websiteUrl, report = console.error }) {
+export function createDigestWorker({ listGroups, claim, finish, validateDestination, send, websiteUrl, report = console.error }) {
     return async (kind, now) => {
         const window = getReminderWindow(kind, now);
-        for (const groupId of await listGroups()) {
+        for (const group of await listGroups()) {
             try {
-                const digest = await claim(groupId, kind, window);
+                await validateDestination(group);
+                const digest = await claim(group, kind, window);
                 if (!digest) continue;
                 await send(digest, buildDigestMessages(digest, kind, websiteUrl));
-                await finish(groupId, kind, window);
+                await finish(group.id, kind, window);
             } catch (error) {
                 // A claim stays consumed if delivery or its acknowledgement is uncertain.
-                report(`Chapter ${kind} digest failed for group ${groupId}`, error);
+                report(`Chapter ${kind} digest failed for group ${group.id}`, error);
             }
         }
     };
