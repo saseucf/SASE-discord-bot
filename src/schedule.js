@@ -6,21 +6,14 @@ import { createDigestWorker } from './chapter-digests.js';
 import { TIME_ZONE } from './reminder-windows.js';
 import { createDigestStore } from './supabase.js';
 
-const audiences = ['General', 'Pro-Dev', 'Tech', 'Pre-Health', 'Service', 'Socials', 'Fundraisers'];
-
-export function readDestinations(env, report = console.error) {
-    const destinations = [];
-    for (const id of audiences) {
-        const prefix = 'DISCORD_' + id.toUpperCase().replaceAll('-', '_');
-        const channel = env[prefix + '_CHANNEL_ID']?.trim();
-        const role = env[prefix + '_ROLE_ID']?.trim();
-        if (![channel, role].every(value => /^[1-9][0-9]{16,19}$/.test(value ?? ''))) {
-            report(`Skipping ${id}: configure ${prefix}_CHANNEL_ID and ${prefix}_ROLE_ID.`);
-            continue;
-        }
-        destinations.push({ id, discord_channel_id: channel, discord_role_id: role });
+export function readDestination(env, report = console.error) {
+    const channel = env.DISCORD_REMINDERS_CHANNEL_ID?.trim();
+    const role = env.DISCORD_REMINDERS_ROLE_ID?.trim();
+    if (![channel, role].every(value => /^[1-9][0-9]{16,19}$/.test(value ?? ''))) {
+        report('Configure DISCORD_REMINDERS_CHANNEL_ID and DISCORD_REMINDERS_ROLE_ID.');
+        return null;
     }
-    return destinations;
+    return { discord_channel_id: channel, discord_role_id: role };
 }
 
 // Never automatically retry a message that Discord might have accepted.
@@ -92,10 +85,10 @@ export default function startSchedule(client) {
         return;
     }
 
-    const groups = readDestinations(process.env);
-    if (!groups.length) return;
+    const destination = readDestination(process.env);
+    if (!destination) return;
     const worker = createDigestWorker({
-        listGroups: () => groups,
+        destination,
         ...createDigestStore(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY),
         websiteUrl,
         validateDestination: group => validateDestination(client, group),

@@ -69,32 +69,34 @@ For development, register commands against a test server using `GUILD_ID`. Globa
 
 ## Chapter event digests
 
-The bot posts today's published chapter events at 9:00 a.m. Eastern and the
-upcoming Monday through Sunday's events at 6:00 p.m. Eastern on Sundays.
-Service, Social, and Fundraiser events use their respective channels. Workshops follow their subcategory. Other events use General.
-Empty destinations receive no message.
+The bot sends one roundup of published chapter events at 9 a.m. Eastern each
+day. On Sundays at 6 p.m. Eastern it sends the upcoming Monday through Sunday
+schedule. Both go to the same announcement channel. Only the first message in
+each roundup mentions the opt-in role. Empty roundups are skipped.
 
-Apply the companion website migration before starting this bot version. Set
-`SUPABASE_URL`, a server-only `SUPABASE_SERVICE_ROLE_KEY`, and
-`SASE_WEBSITE_URL` (the chapter website's public HTTPS origin) in the bot
-environment. Set these channel and role IDs on the same host:
+Apply the companion website migration. Set `SUPABASE_URL`, the server-only
+`SUPABASE_SERVICE_ROLE_KEY`, `SASE_WEBSITE_URL` (for event links), and these
+Discord IDs on the bot host:
 
-| Destination | Channel ID variable | Role ID variable |
-| --- | --- | --- |
-| General | `DISCORD_GENERAL_CHANNEL_ID` | `DISCORD_GENERAL_ROLE_ID` |
-| Pro-Dev | `DISCORD_PRO_DEV_CHANNEL_ID` | `DISCORD_PRO_DEV_ROLE_ID` |
-| Tech | `DISCORD_TECH_CHANNEL_ID` | `DISCORD_TECH_ROLE_ID` |
-| Pre-Health | `DISCORD_PRE_HEALTH_CHANNEL_ID` | `DISCORD_PRE_HEALTH_ROLE_ID` |
-| Service | `DISCORD_SERVICE_CHANNEL_ID` | `DISCORD_SERVICE_ROLE_ID` |
-| Socials | `DISCORD_SOCIALS_CHANNEL_ID` | `DISCORD_SOCIALS_ROLE_ID` |
-| Fundraisers | `DISCORD_FUNDRAISERS_CHANNEL_ID` | `DISCORD_FUNDRAISERS_ROLE_ID` |
+| Variable | Purpose |
+| --- | --- |
+| `DISCORD_REMINDERS_CHANNEL_ID` | Announcement channel for all event reminders |
+| `DISCORD_REMINDERS_ROLE_ID` | Dedicated opt-in role shared by daily and weekly reminders |
+| `DISCORD_BOT_SETTINGS_CHANNEL_ID` | Channel where members turn reminder pings on or off |
 
-Restart the bot after editing its environment. An incomplete or invalid pair logs a configuration error and skips that destination. The bot needs
-access to that Discord server and permission to send in that channel. The role
-must be mentionable there, either through the role setting or the bot's channel
-permissions.
+Give members view access to the announcement channel. Disable posting and
+thread creation/replies for ordinary members there, and allow posting for the
+bot and admins. Review any existing channel overrides that allow posting.
+The bot needs permission to send and mention the reminder role there.
 
-The database records one claim per group, digest type, and date window. If a
+Create a reminder role with no server permissions or privileged channel
+overrides. Put it below the bot's role and grant the bot Manage Roles.
+Restart the bot after setting the IDs. Register the slash commands using
+`node src/deploy-commands.js` with the target guild configured. An admin runs
+`/reminder-settings` in the bot settings channel to publish the buttons.
+Members click Enable reminders or Disable reminders to update their own role.
+
+The database records one claim per digest type and date window. If a
 send or its acknowledgement fails, check Discord before posting a replacement
 manually. A claim without a delivery timestamp can mean nothing was sent, some
 messages in a long digest went through, or Discord accepted the whole digest.

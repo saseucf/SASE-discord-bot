@@ -1,14 +1,54 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildDigestMessages, createDigestWorker } from '../src/chapter-digests.js';
-import { readDestinations, registerDigestSchedule, sendDigestMessage, validateDestination } from '../src/schedule.js';
+import { readDestination, registerDigestSchedule, sendDigestMessage, validateDestination } from '../src/schedule.js';
+import { createDigestStore } from '../src/supabase.js';
 
 const websiteUrl = 'https://chapter.example.test';
 const role = '10000000000000001';
 const channelId = '10000000000000002';
+const destination = { discord_channel_id: channelId, discord_role_id: role };
 const event = { id: 'event-id', title: 'Study Night', location: 'Library', start_time: '2026-11-30T23:00:00Z' };
-const digest = { name: 'Chapter', discord_channel_id: channelId, discord_role_id: role, events: [event] };
-const now = new Date('2026-11-29T23:00:00Z');
+const digest = { ...destination, events: [event] };
+const sunday = new Date('2026-11-29T23:00:00Z');
+const weeklyWindow = { start: '2026-11-30T05:00:00.000Z', end: '2026-12-07T05:00:00.000Z' };
+const legacyAudiences = ['General', 'Pro-Dev', 'Tech', 'Pre-Health', 'Service', 'Socials', 'Fundraisers'];
+
+// Events of every type, as the database returns them (already sorted).
+const combined = [
+    { id: 'a', title: 'Tech Workshop', location: 'HEC', start_time: '2026-11-30T15:00:00Z' },
+    { id: 'b', title: 'Service Day', location: null, start_time: '2026-12-01T15:00:00Z' },
+    { id: 'c', title: 'Social Night', location: 'Union', start_time: '2026-12-02T23:00:00Z' },
+    { id: 'd', title: 'General Body Meeting', location: 'CB1', start_time: '2026-12-03T23:00:00Z' },
+];
+
+function harness({ claimResult = combined, validate, sendError, finishError } = {}) {
+    const calls = [];
+    let claimed = false;
+    const worker = createDigestWorker({
+        destination,
+        websiteUrl,
+        validateDestination: async (...args) => {
+            calls.push(['validate', ...args]);
+            if (validate) await validate();
+        },
+        claim: async (...args) => {
+            calls.push(['claim', ...args]);
+            if (claimed) return null; // The database hands out each window once.
+            claimed = true;
+            return claimResult;
+        },
+        send: async (...args) => {
+            calls.push(['send', ...args]);
+            if (sendError) throw sendError;
+        },
+        finish: async (...args) => {
+            calls.push(['finish', ...args]);
+            if (finishError) throw finishError;
+        },
+    });
+    return { worker, calls, names: () => calls.map(([name]) => name) };
+}
 
 test('registers the Eastern daily and Sunday jobs using their scheduled instant', async () => {
     const jobs = [];
@@ -19,65 +59,144 @@ test('registers the Eastern daily and Sunday jobs using their scheduled instant'
         ['0 18 * * 0', { timezone: 'America/New_York', noOverlap: true }],
     ]);
     assert.deepEqual(calls, []);
-    for (const [, run] of jobs) await run({ date: now });
-    assert.deepEqual(calls, [['daily', now], ['weekly', now]]);
+    for (const [, run] of jobs) await run({ date: sunday });
+    assert.deepEqual(calls, [['daily', sunday], ['weekly', sunday]]);
 });
 
-test('renders titles, times, locations and public event links in order', () => {
+test('the scheduler reports a failed digest instead of crashing', async () => {
+    const jobs = [];
+    const reported = [];
+    const failure = new Error('boom');
+    registerDigestSchedule(async () => { throw failure; }, (...args) => jobs.push(args), (...args) => reported.push(args));
+    await jobs[0][1]({ date: sunday });
+    assert.equal(reported.length, 1);
+    assert.match(reported[0][0], /daily/);
+    assert.equal(reported[0][1], failure);
+});
+
+test('posts one combined digest for all event types in the order the database returns', async () => {
+    const { worker, calls, names } = harness();
+    await worker('weekly', sunday);
+    assert.deepEqual(names(), ['validate', 'claim', 'send', 'finish']);
+
+    const sends = calls.filter(([name]) => name === 'send');
+    assert.equal(sends.length, 1);
+    const messages = sends[0].find(Array.isArray);
+    const text = messages.map(message => message.content).join('\n');
+    const titles = [...text.matchAll(/\*\*([^*\n]+)\*\*\n<t:/g)].map(match => match[1]);
+    assert.deepEqual(titles, combined.map(e => e.title));
+    const links = [...text.matchAll(/<https:\/\/chapter\.example\.test\/events\/([^>]+)>/g)].map(match => match[1]);
+    assert.deepEqual(links, combined.map(e => e.id));
+    assert.match(messages[0].content, /^<@&10000000000000001> \*\*Next week's events\*\*/);
+    for (const audience of legacyAudiences) assert.doesNotMatch(text, new RegExp(`· ${audience}`));
+});
+
+test('claims and finishes by kind and window only, never by audience', async () => {
+    const { worker, calls } = harness();
+    await worker('weekly', sunday);
+    const claim = calls.find(([name]) => name === 'claim');
+    const finish = calls.find(([name]) => name === 'finish');
+    assert.deepEqual(claim.slice(1), ['weekly', weeklyWindow]);
+    assert.deepEqual(finish.slice(1), ['weekly', weeklyWindow]);
+    assert.deepEqual(calls.find(([name]) => name === 'validate').slice(1), [destination]);
+});
+
+test('daily runs claim the Eastern calendar day', async () => {
+    const { worker, calls } = harness();
+    await worker('daily', new Date('2026-11-30T14:00:00Z'));
+    assert.deepEqual(calls.find(([name]) => name === 'claim').slice(1),
+        ['daily', { start: '2026-11-30T05:00:00.000Z', end: '2026-12-01T05:00:00.000Z' }]);
+});
+
+test('an invalid destination fails before claiming so the window stays available', async () => {
+    let valid = false;
+    const { worker, names } = harness({ validate: () => { if (!valid) throw new Error('wrong role'); } });
+    await assert.rejects(worker('weekly', sunday), /wrong role/);
+    assert.deepEqual(names(), ['validate']);
+    valid = true;
+    await worker('weekly', sunday);
+    assert.deepEqual(names(), ['validate', 'validate', 'claim', 'send', 'finish']);
+});
+
+test('an empty or already-claimed window sends nothing', async () => {
+    for (const claimResult of [null, []]) {
+        const { worker, names } = harness({ claimResult });
+        await worker('daily', sunday);
+        assert.deepEqual(names(), ['validate', 'claim']);
+    }
+});
+
+test('a failed send bubbles up, is not acknowledged, and is never resent', async () => {
+    const { worker, names } = harness({ sendError: new Error('Indeterminate network result') });
+    await assert.rejects(worker('weekly', sunday), /Indeterminate/);
+    assert.deepEqual(names(), ['validate', 'claim', 'send']);
+    await worker('weekly', sunday);
+    assert.deepEqual(names().filter(name => name === 'send'), ['send']);
+});
+
+test('a failed acknowledgement bubbles up to the scheduler', async () => {
+    const { worker } = harness({ finishError: new Error('ack matched no claim') });
+    await assert.rejects(worker('weekly', sunday), /ack matched no claim/);
+});
+
+test('renders titles, times, locations and public event links', () => {
     const [message] = buildDigestMessages({ ...digest, events: [event, { ...event, id: 'second', title: 'Career Night', location: null }] }, 'weekly', websiteUrl);
-    assert.match(message.content, /^<@&10000000000000001> \*\*Next week's events/);
+    assert.match(message.content, /^<@&10000000000000001> \*\*Next week's events\*\*/);
     assert.match(message.content, /Study Night\*\*\n<t:\d+:f> .* Library .* <https:\/\/chapter.example.test\/events\/event-id>/);
     assert.match(message.content, /Study Night[\s\S]+Career Night[\s\S]+Location TBD/);
     assert.deepEqual(message.allowed_mentions, { parse: [], roles: [role], users: [], replied_user: false });
 });
 
-test('keeps long digests within Discord limits with one role mention and intact event links', () => {
-    const events = Array.from({ length: 9 }, (_, index) => ({
-        ...event, id: `event-${index}`, title: '**@everyone** '.repeat(100),
-        location: `<@&${role}> <@123456789012345678> @here ` + 'x'.repeat(250),
+test('a long digest split across messages pings the role exactly once', async () => {
+    const events = Array.from({ length: 40 }, (_, index) => ({
+        ...event, id: `event-${index}`, title: '**@everyone** '.repeat(12),
+        location: `<@&${role}> <@123456789012345678> @here ` + 'x'.repeat(150),
     }));
-    const messages = buildDigestMessages({ ...digest, name: '@everyone', events }, 'daily', websiteUrl);
-    assert.ok(messages.length > 1);
+    const { worker, calls } = harness({ claimResult: events });
+    await worker('daily', sunday);
+    const messages = calls.find(([name]) => name === 'send').find(Array.isArray);
+    assert.ok(messages.length > 2);
     assert.ok(messages.every(message => message.content.length <= 2000));
     assert.ok(messages.every(message => message.flags === 4));
-    assert.equal(messages.slice(1).every(message => message.allowed_mentions.roles.length === 0), true);
     assert.deepEqual(messages.flatMap(message => message.allowed_mentions.roles), [role]);
+    assert.ok(messages.every(message => message.allowed_mentions.parse.length === 0));
     const contents = messages.map(message => message.content).join('\n');
     assert.equal(contents.split(`<@&${role}>`).length - 1, 1);
+    assert.ok(messages[0].content.startsWith(`<@&${role}>`));
     assert.doesNotMatch(contents, /@everyone|@here|<@123456789012345678>/);
     assert.deepEqual([...contents.matchAll(/<https:\/\/chapter.example.test\/events\/(event-\d+)>/g)].map(match => match[1]), events.map(e => e.id));
 });
 
-test('skips empty claims, isolates group errors and never sends an already-consumed claim', async () => {
-    const claimed = new Set();
-    const sent = [];
-    const finished = [];
-    const reported = [];
-    const worker = createDigestWorker({
-        listGroups: async () => ['empty', 'A', 'B'].map(id => ({ id })),
-        validateDestination: async () => {},
-        claim: async ({ id: group }, kind, window) => {
-            assert.equal(kind, 'weekly');
-            assert.equal(window.start, '2026-11-30T05:00:00.000Z');
-            if (group === 'empty' || claimed.has(group)) return null;
-            claimed.add(group);
-            return digest.events;
-        },
-        finish: async (group) => { finished.push(group); },
-        send: async (group, messages) => {
-            assert.equal(messages.length, 1);
-            sent.push(group.name);
-            if (group.name === 'A') throw new Error('Indeterminate network result');
-        },
-        report: (...args) => reported.push(args),
-        websiteUrl,
-    });
+test('reads one reminder channel and role from the environment', () => {
+    const env = { DISCORD_REMINDERS_CHANNEL_ID: ` ${channelId}\n`, DISCORD_REMINDERS_ROLE_ID: role };
+    assert.deepEqual(readDestination(env, () => assert.fail('no error expected')), destination);
+});
 
-    await worker('weekly', now);
-    await worker('weekly', now);
-    assert.deepEqual(sent, ['A', 'B']);
-    assert.deepEqual(finished, ['B']);
-    assert.equal(reported.length, 1);
+test('refuses missing or malformed reminder settings', () => {
+    for (const env of [
+        {},
+        { DISCORD_REMINDERS_CHANNEL_ID: channelId },
+        { DISCORD_REMINDERS_ROLE_ID: role },
+        { DISCORD_REMINDERS_CHANNEL_ID: 'general', DISCORD_REMINDERS_ROLE_ID: role },
+        { DISCORD_REMINDERS_CHANNEL_ID: channelId, DISCORD_REMINDERS_ROLE_ID: '01000000000000001' },
+    ]) {
+        const errors = [];
+        assert.equal(readDestination(env, error => errors.push(error)), null);
+        assert.equal(errors.length, 1);
+        assert.match(errors[0], /DISCORD_REMINDERS_CHANNEL_ID|DISCORD_REMINDERS_ROLE_ID/);
+    }
+});
+
+test('ignores the legacy per-group channel settings', () => {
+    const legacy = {};
+    for (const id of legacyAudiences) {
+        const prefix = 'DISCORD_' + id.toUpperCase().replaceAll('-', '_');
+        legacy[prefix + '_CHANNEL_ID'] = '10000000000000009';
+        legacy[prefix + '_ROLE_ID'] = '10000000000000008';
+    }
+    assert.equal(readDestination(legacy, () => {}), null);
+    assert.equal(readDestination({ ...legacy, DISCORD_REMINDERS_ROLE_ID: role }, () => {}), null);
+    assert.deepEqual(readDestination({ ...legacy, DISCORD_REMINDERS_CHANNEL_ID: channelId, DISCORD_REMINDERS_ROLE_ID: role }, () => {}), destination);
 });
 
 test('checks the destination and refuses an everyone role', async () => {
@@ -88,13 +207,13 @@ test('checks the destination and refuses an everyone role', async () => {
         guild: { id: guildId, roles: { fetch: async id => ({ id, mentionable: true }) } },
     };
     const client = { channels: { fetch: async () => channel } };
-    await validateDestination(client, digest);
-    await assert.rejects(validateDestination(client, { ...digest, discord_role_id: guildId }), /specific role/);
+    await validateDestination(client, destination);
+    await assert.rejects(validateDestination(client, { ...destination, discord_role_id: guildId }), /specific role/);
     channel.guild.roles.fetch = async id => ({ id, mentionable: false });
     channel.permissionsFor = () => ({ has: permission => Array.isArray(permission) });
-    await assert.rejects(validateDestination(client, digest), /cannot mention/);
+    await assert.rejects(validateDestination(client, destination), /cannot mention/);
     channel.guild = null;
-    await assert.rejects(validateDestination(client, digest), /server channel/);
+    await assert.rejects(validateDestination(client, destination), /server channel/);
 });
 
 test('makes one POST attempt against a stub even if Discord rejects the request', async () => {
@@ -109,22 +228,6 @@ test('makes one POST attempt against a stub even if Discord rejects the request'
     };
     await assert.rejects(sendDigestMessage(channelId, message, 'mock-token', mockFetch), /HTTP 503/);
     assert.equal(requests, 1);
-});
-
-test('a corrected destination can still claim the same window', async () => {
-    let valid = false;
-    let claims = 0;
-    const worker = createDigestWorker({
-        listGroups: async () => [{ id: 'A' }],
-        validateDestination: async () => { if (!valid) throw new Error('wrong role'); },
-        claim: async () => { claims++; return digest.events; },
-        send: async () => {}, finish: async () => {}, report: () => {}, websiteUrl,
-    });
-    await worker('weekly', now);
-    assert.equal(claims, 0);
-    valid = true;
-    await worker('weekly', now);
-    assert.equal(claims, 1);
 });
 
 test('a rate-limited continuation retries only that message after the requested delay', async () => {
@@ -142,19 +245,19 @@ test('a rate-limited continuation retries only that message after the requested 
     assert.deepEqual(posts, ['first', 'continued', 'continued']);
 });
 
-test('loads fixed Discord destinations and skips an incomplete pair', () => {
-    const env = {};
-    const names = ['General', 'Pro-Dev', 'Tech', 'Pre-Health', 'Service', 'Socials', 'Fundraisers'];
-    for (const id of names) {
-        const prefix = 'DISCORD_' + id.toUpperCase().replaceAll('-', '_');
-        env[prefix + '_CHANNEL_ID'] = channelId;
-        env[prefix + '_ROLE_ID'] = role;
-    }
-    assert.deepEqual(readDestinations(env).map(group => group.id), names);
-    delete env.DISCORD_SERVICE_ROLE_ID;
-    const errors = [];
-    const groups = readDestinations(env, error => errors.push(error));
-    assert.equal(groups.length, 6);
-    assert.equal(groups.some(group => group.id === 'Service'), false);
-    assert.match(errors[0], /DISCORD_SERVICE_ROLE_ID/);
+test('the Supabase store calls the kind/window RPCs without an audience', async (t) => {
+    const requests = [];
+    const replies = [[combined], [true], [false]];
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        requests.push({ path: new URL(String(url)).pathname, body: JSON.parse(options.body) });
+        return new Response(JSON.stringify(replies.shift()[0]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    const store = createDigestStore('https://stub.supabase.test', 'stub-service-key');
+    assert.deepEqual(await store.claim('weekly', weeklyWindow), combined);
+    await store.finish('weekly', weeklyWindow);
+    await assert.rejects(store.finish('weekly', weeklyWindow), /no claim/);
+    assert.deepEqual(requests.slice(0, 2), [
+        { path: '/rest/v1/rpc/claim_chapter_digest', body: { p_kind: 'weekly', p_window_start: weeklyWindow.start, p_window_end: weeklyWindow.end } },
+        { path: '/rest/v1/rpc/finish_chapter_digest', body: { p_kind: 'weekly', p_window_start: weeklyWindow.start } },
+    ]);
 });

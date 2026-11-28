@@ -11,15 +11,13 @@ export function createDigestStore(url, serviceRoleKey) {
     }
 
     return {
-        claim: (group, kind, window) => rpc('claim_chapter_digest', {
-            p_audience: group.id,
+        claim: (kind, window) => rpc('claim_chapter_digest', {
             p_kind: kind,
             p_window_start: window.start,
             p_window_end: window.end,
         }),
-        finish: async (groupId, kind, window) => {
+        finish: async (kind, window) => {
             const delivered = await rpc('finish_chapter_digest', {
-                p_audience: groupId,
                 p_kind: kind,
                 p_window_start: window.start,
             });

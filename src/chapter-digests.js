@@ -12,9 +12,8 @@ function eventText(value, limit) {
 export function buildDigestMessages(digest, kind, websiteUrl) {
     const role = digest.discord_role_id;
     const heading = kind === 'daily' ? "Today's events" : "Next week's events";
-    const group = eventText(digest.name, 80);
-    const contents = [`<@&${role}> **${heading} · ${group}**`];
-    const continuation = `**${heading} · ${group} (continued)**`;
+    const contents = [`<@&${role}> **${heading}**`];
+    const continuation = `**${heading} (continued)**`;
 
     for (const event of digest.events) {
         const title = eventText(event.title, 160) || 'Untitled event';
@@ -38,21 +37,14 @@ export function buildDigestMessages(digest, kind, websiteUrl) {
     }));
 }
 
-export function createDigestWorker({ listGroups, claim, finish, validateDestination, send, websiteUrl, report = console.error }) {
+export function createDigestWorker({ destination, claim, finish, validateDestination, send, websiteUrl }) {
     return async (kind, now) => {
         const window = getReminderWindow(kind, now);
-        for (const group of await listGroups()) {
-            try {
-                await validateDestination(group);
-                const events = await claim(group, kind, window);
-                if (!events) continue;
-                const digest = { ...group, name: group.id, events };
-                await send(digest, buildDigestMessages(digest, kind, websiteUrl));
-                await finish(group.id, kind, window);
-            } catch (error) {
-                // A claim stays consumed if delivery or its acknowledgement is uncertain.
-                report(`Chapter ${kind} digest failed for group ${group.id}`, error);
-            }
-        }
+        await validateDestination(destination);
+        const events = await claim(kind, window);
+        if (!events?.length) return;
+        const digest = { ...destination, events };
+        await send(digest, buildDigestMessages(digest, kind, websiteUrl));
+        await finish(kind, window);
     };
 }
