@@ -67,6 +67,44 @@ When generating an invite URL, select:
 
 For development, register commands against a test server using `GUILD_ID`. Global commands can take longer to appear.
 
+## Chapter event digests
+
+The bot sends one roundup of published chapter events at 9 a.m. Eastern each
+day. On Sundays at 6 p.m. Eastern it sends the upcoming Monday through Sunday
+schedule. Both go to the same announcement channel. Only the first message in
+each roundup mentions the opt-in role. Empty roundups are skipped.
+
+Apply the companion website migration. Set `SUPABASE_URL`, the server-only
+`SUPABASE_SERVICE_ROLE_KEY`, `SASE_WEBSITE_URL` (for event links), and these
+Discord IDs on the bot host:
+
+| Variable | Purpose |
+| --- | --- |
+| `DISCORD_REMINDERS_CHANNEL_ID` | Announcement channel for all event reminders |
+| `DISCORD_REMINDERS_ROLE_ID` | Dedicated opt-in role shared by daily and weekly reminders |
+| `DISCORD_BOT_SETTINGS_CHANNEL_ID` | Channel where members turn reminder pings on or off |
+
+Give members view access to the announcement channel. Disable posting and
+thread creation/replies for ordinary members there, and allow posting for the
+bot and admins. Review any existing channel overrides that allow posting.
+The bot needs permission to send and mention the reminder role there.
+
+Create a reminder role with no server permissions or privileged channel
+overrides. Put it below the bot's role and grant the bot Manage Roles.
+Restart the bot after setting the IDs. Register the slash commands using
+`node src/deploy-commands.js` with the target guild configured. An admin runs
+`/reminder-settings` in the bot settings channel to publish the buttons.
+Members click Enable reminders or Disable reminders to update their own role.
+
+The database records one claim per digest type and date window. If a
+send or its acknowledgement fails, check Discord before posting a replacement
+manually. A claim without a delivery timestamp can mean nothing was sent, some
+messages in a long digest went through, or Discord accepted the whole digest.
+The scheduled jobs don't replay earlier time slots on startup.
+
+`npm test` uses mock destinations and covers scheduling, formatting, mentions,
+and send failures.
+
 ## Project Structure
 
 The structure may grow as features are added:

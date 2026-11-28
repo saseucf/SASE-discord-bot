@@ -1,8 +1,17 @@
+import { handleReminderButton } from '../reminder-settings.js';
 import { Events, MessageFlags, Collection } from 'discord.js';
 
 export default {
 	name: Events.InteractionCreate,
 	async execute(interaction) {
+		if (interaction.isButton()) {
+			try {
+				await handleReminderButton(interaction);
+			} catch (error) {
+				console.error('Failed to respond to reminder button', error);
+			}
+			return;
+		}
 		if (!interaction.isChatInputCommand()) return;
 
 		const command = interaction.client.commands.get(interaction.commandName);

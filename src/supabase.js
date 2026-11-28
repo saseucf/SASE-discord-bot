@@ -1,45 +1,27 @@
-import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL
-const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY
+export function createDigestStore(url, serviceRoleKey) {
+    const supabase = createClient(url, serviceRoleKey, {
+        auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+    });
+    async function rpc(name, args) {
+        const { data, error } = await supabase.rpc(name, args);
+        if (error) throw error;
+        return data;
+    }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-    detectSessionInUrl: false
-  }
-})
-
-export default async function remindEvent() {
-    const now = new Date()
-    const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
-    
-    const {data} = await supabase
-        .from('events')
-        .select('*')
-        .gte('start_time', now.toISOString())
-        .lt('start_time', oneHourLater.toISOString())
-        .eq('reminded', false)
-    
-    return data;
-}
-
-export async function getWeeklyEvents() {
-    const now = new Date();
-    const oneWeekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-    const { data } = await supabase
-        .from('events')
-        .select('*')
-        .gte('start_time', now.toISOString())
-        .lt('start_time', oneWeekLater.toISOString());
-
-    return data;
-}
-
-export async function markReminded(id) {
-    const { data, error } = await supabase.from('events').update({reminded: true}).eq('id', id).select();
-    console.log('markReminded result:', { data, error });
+    return {
+        claim: (kind, window) => rpc('claim_chapter_digest', {
+            p_kind: kind,
+            p_window_start: window.start,
+            p_window_end: window.end,
+        }),
+        finish: async (kind, window) => {
+            const delivered = await rpc('finish_chapter_digest', {
+                p_kind: kind,
+                p_window_start: window.start,
+            });
+            if (!delivered) throw new Error('Digest delivery acknowledgement matched no claim');
+        },
+    };
 }
